@@ -150,9 +150,10 @@ the team's installed build; passing CPU tests does not settle these.
 
 ## First GPU check (template, not a submitted job)
 
-Get from Moh/Rishith: exact checkpoint SHA; image/version; baseline engine flags;
-resident weights and node (`gitmachine-1` per ENG-85; older infrastructure notes
-put Kimi on node 2). Confirm the installed health checker and results retrieval.
+Target **gitmachine-2**, confirmed by Rishith to Medha on October 27 despite
+ENG-85's original node-1 wording. Get from the node/baseline evidence: exact
+checkpoint SHA, image/version, baseline engine flags and resident weights.
+Confirm the installed health checker and results retrieval.
 Use the team's job-submission path and install this review branch/commit inside
 the container first. `gitm-submit --gitm-ref` reads GitM-Labs/runtime, not a fork;
 do not point it at a fork-only branch and expect installation to work.

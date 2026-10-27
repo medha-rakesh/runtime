@@ -7,7 +7,9 @@ Base: runtime main `bbc6c07587cece4dfa42ef6a282bcb253fc2a942`.
 ```bash
 python -m pytest tests/test_vllm_engine_record.py tests/test_vllm_stats_v1.py \
   tests/test_predict_graph_from_engine.py tests/test_gpu_detect.py
-ruff check gitm/engines tests/test_vllm_engine_record.py
+# Match .github/workflows/tests.yml (a newer Ruff no longer checks UP038).
+ruff --version  # 0.12.11
+ruff check .
 bash -n deploy/h200/eng85-extract.sh
 python -m gitm.engines.vllm_record --help
 git diff --check
@@ -29,8 +31,8 @@ overwrites, avoid mutating the input, and never invent trial verdicts.
 
 ## Not yet verified
 
-- Live Kimi checkpoint, container identity, engine version, baseline flags,
-  resident weights and assigned node.
+- Live Kimi checkpoint, container identity, engine version, baseline flags and
+  resident weights. Rishith confirmed gitmachine-2 for this task on October 27.
 - Installed engine's RPC compatibility, all-eight-rank visibility, and worker
   memory/quantization fields.
 - Compiled graph dump production and shapes without GitM tracing hooks.
@@ -42,3 +44,16 @@ replace ENG-69's interface, or implement ENG-86/87. The earlier DeepSeek job 131
 does not validate this extractor or Kimi.
 The `gitm.engine_descriptions` extension key is proposed for review following
 Sebastian's October 27 direction to expand the existing ENG-72 run record.
+
+## PR #217 CI corrections
+
+The initial PR failed Ruff's UP038 rule in three `isinstance` calls: local Ruff
+was 0.17.0, while CI pins 0.12.11. Use Python 3.10+ union syntax and verify with
+the exact CI version. Repository-wide Ruff 0.12.11 now passes.
+
+The full CI suite also exposed three probe-test failures when earlier tests left
+`CUDA_INJECTION64_PATH` enabled. The extractor test fixture now isolates all
+tracing environment variables. The dedicated tracing-rejection test still sets
+an injection variable and verifies the production guard refuses it. All 37 new
+tests pass even when the pytest process inherits an injection variable; no
+production guard has been removed or bypassed.

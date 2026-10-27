@@ -15,7 +15,11 @@ from gitm.engines import vllm_record as record
 
 
 @pytest.fixture(autouse=True)
-def installed_version(monkeypatch):
+def isolated_engine_environment(monkeypatch):
+    # Other trace tests may leave injection enabled. Each probe test controls
+    # its own launch environment; the rejection test explicitly sets its hook.
+    for key in record._HOOK_ENV:
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.31.0")
 
 

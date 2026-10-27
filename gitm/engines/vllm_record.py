@@ -52,7 +52,7 @@ def _json_value(value: Any) -> Any:
     """Strict metadata-only conversion. Never repr arbitrary engine objects."""
     if isinstance(value, Enum):
         return _json_value(value.value)
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, str | bool | int):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -63,7 +63,7 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(k): "[redacted]" if str(k).lower() in _SECRET_KEYS else _json_value(v)
                 for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_json_value(v) for v in value]
     if type(value).__module__ == "torch" and type(value).__name__ in ("dtype", "device"):
         return str(value)
@@ -332,7 +332,7 @@ def extract_vllm_record(engine: Any, *, graph_dir: str | Path | None = None,
                                       "reason": "worker and driver versions differ"})
             for name in ("model_memory_usage", "peak_activation_memory", "available_kv_cache_memory_bytes"):
                 value = worker.get("memory_bytes", {}).get(name, {}).get("value")
-                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                if not isinstance(value, int | float) or isinstance(value, bool) or value < 0:
                     result["gaps"].append({"field": f"workers[{index}].memory_bytes.{name}",
                                           "reason": "post-initialization memory measurement unavailable"})
     result["status"] = "partial" if result["gaps"] else "extracted"
