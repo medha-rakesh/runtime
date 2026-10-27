@@ -282,8 +282,11 @@ def test_probe_exercises_compilation_writes_json_and_shuts_down(tmp_path, monkey
                         "--", "--model", "moonshotai/Kimi-K2.6"]) == 0
     assert events == ["build", "generate", "shutdown"]
     data = json.loads((out / "engine_record.json").read_text())
-    assert data["probe"]["gitm_tracing_hooks"] is False
-    assert data["acceptance"] == "pending_live_review"
+    assert list(data) == ["gitm.engine_descriptions"]
+    key, payload = next(iter(data["gitm.engine_descriptions"].items()))
+    assert key.startswith("probe-")
+    assert payload["probe"]["gitm_tracing_hooks"] is False
+    assert payload["acceptance"] == "pending_live_review"
 
 
 def test_probe_releases_engine_even_when_recording_fails(tmp_path, monkeypatch):
@@ -304,3 +307,53 @@ def test_probe_refuses_eager_or_unpinned_revision_before_build(tmp_path, monkeyp
         record.main(["--out", str(tmp_path / "probe"), "--expected-vllm-version", "0.31.0",
                      "--", "--model", "example"])
     assert events == []
+
+
+def test_extension_preserves_existing_eng72_verdict_and_provenance_fields():
+    base = {
+        "beat_baseline": False, "delta": -0.01, "iterations": 2, "wall_time_s": 120,
+        "node_healthy_for_window": False, "baseline_config": {"tensor_parallel_size": 8},
+        "candidate_config": {"tensor_parallel_size": 8, "max_num_seqs": 64},
+        "canary_instance": "candidate", "control_instances": ["baseline"],
+        "policy_id": "p1", "degradations": ["existing-gap"], "state": "invalid",
+    }
+    out = record.extend_run_record(base, {"model": "kimi"}, instance_id="candidate")
+    assert {k: out[k] for k in base} == base
+    assert "gitm.engine_descriptions" not in base
+    out["baseline_config"]["tensor_parallel_size"] = 2
+    assert base["baseline_config"]["tensor_parallel_size"] == 8
+
+
+def test_extension_keeps_control_and_canary_evidence_separate():
+    first = record.extend_run_record({}, {"precision": "bf16"}, instance_id="control")
+    second = record.extend_run_record(first, {"precision": "fp8"}, instance_id="canary")
+    assert set(second["gitm.engine_descriptions"]) == {"control", "canary"}
+    assert set(first["gitm.engine_descriptions"]) == {"control"}
+    assert second["gitm.engine_descriptions"]["control"]["precision"] == "bf16"
+
+
+def test_empty_base_is_only_an_extension_not_a_fabricated_loop_verdict():
+    out = record.extend_run_record({}, {"acceptance": "pending_live_review"}, instance_id="probe")
+    assert set(out) == {"gitm.engine_descriptions"}
+    for name in ("beat_baseline", "delta", "node_healthy_for_window", "state", "run_id"):
+        assert name not in out
+
+
+def test_extension_refuses_to_overwrite_existing_instance_evidence():
+    out = record.extend_run_record({}, {"engine_version": "0.31.0"}, instance_id="same")
+    assert record.extend_run_record(out, {"engine_version": "0.31.0"}, instance_id="same") == out
+    with pytest.raises(ValueError, match="different evidence"):
+        record.extend_run_record(out, {"engine_version": "0.32.0"}, instance_id="same")
+
+
+@pytest.mark.parametrize("instance", ["", "   ", None])
+def test_extension_needs_an_instance_label(instance):
+    with pytest.raises(ValueError, match="nonempty"):
+        record.extend_run_record({}, {}, instance_id=instance)
+
+
+def test_extension_preserves_namespaced_pamela_record_keys_too():
+    base = {"gitm.beat_baseline": True, "gitm.node_healthy_for_window": False}
+    out = record.extend_run_record(base, {}, instance_id="engine")
+    assert out["gitm.beat_baseline"] is True
+    assert out["gitm.node_healthy_for_window"] is False

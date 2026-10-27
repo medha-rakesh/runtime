@@ -3,9 +3,11 @@
 ## Scope and implementation plan
 
 Start from runtime main `bbc6c07587cece4dfa42ef6a282bcb253fc2a942`.
-Sebastian confirmed on October 27 that an initial JSON structure is acceptable
-and that development can start from main. This record is an engine description,
-not a loop performance verdict or a replacement database schema.
+Sebastian confirmed on October 27 that development can start from main. In his
+subsequent clarification he linked ENG-72's Run record section and asked that it
+be expanded for the values this task needs. The JSON therefore supplies an
+engine-description extension to that record, preserving its existing verdict
+and provenance fields. It does not introduce a replacement loop record.
 
 1. Check the engine's compilation dump independently of GitM's tracing hooks.
 2. Read vLLM's resolved configuration, preserving sources and missing values.
@@ -71,7 +73,41 @@ Existing integration points remain unchanged:
 
 ## JSON structure
 
-The initial schema is `gitm.engine-description.v1`. `model`, `static_config`,
+The CLI's `engine_record.json` is an **extension fragment**:
+
+```json
+{
+  "gitm.engine_descriptions": {
+    "<engine-instance-id>": {"schema_version": "gitm.engine-description.v1"}
+  }
+}
+```
+
+The abbreviated payload above omits evidence fields. `gitm.engine_descriptions`
+is a **proposed extension key for Sebastian/Pamela review**, not a pre-existing
+approved database column. It follows the design's `gitm.*` namespace rule.
+`extend_run_record(existing, description, instance_id=...)` adds it to the
+existing record without changing any existing fields. Multiple entries preserve
+control and canary settings separately; different evidence for the same instance
+is refused rather than silently overwritten. The caller owns the association
+with ENG-72's canary/control instance IDs. CLI observations use a new `probe-*`
+label unless the caller provides `--instance-id`; it is not a Slurm job ID,
+production service identity, or loop run ID.
+
+| ENG-72 existing fields | Treatment |
+| --- | --- |
+| `beat_baseline`, `delta`, `iterations`, `wall_time_s`, `node_healthy_for_window` | Preserve when supplied by the loop; never synthesize from extraction. |
+| `lever_id`, `knob_values`, `canary_instance`, `control_instances`, `window_ids` | Preserve caller-provided context. |
+| `noise_floor`, `threshold`, `min_effect`, `slo_guard`, `state`, `policy_id`, `degradations` | Preserve existing decisions, policy and uncertainty. |
+| `baseline_config`, `candidate_config` | Preserve the complete launch-argument snapshots; resolved engine evidence supplements them. |
+| New `gitm.engine_descriptions[instance_id]` | Model, precision, deployment, worker memory, graph sources and extraction gaps. |
+
+Pamela's namespaced equivalents (`gitm.beat_baseline`, etc.) are also preserved
+unchanged. With no existing loop record, the helper returns only the extension;
+that is not a valid completed performance trial and cannot prove a healthy run
+or a gain. CLI stdout labels it as a run-record engine extension.
+
+Within each engine payload, `model`, `static_config`,
 `deployment`, `compilation`, and `speculative` describe driver-side resolved
 objects. `workers` preserves each rank's own observations. A field is
 `{status, value, source}`; unavailable fields also have a reason. Explicit `null`
@@ -82,6 +118,8 @@ hashes. A graph-shaped file is a candidate, **not** proof of complete FX coverag
 tensor-shape coverage, rank coverage, or execution order. Module enumeration is
 a static tree, not an execution trace. The JSON always says live acceptance is
 pending; no graph-to-planner conversion is claimed.
+
+The linked base design is [ENG-72: Run record](https://linear.app/git-machine/document/loop-design-schema-otel-core-keys-vendor-extension-namespaces-a7eee4e7d4cd#heading-run-record-39dee12a).
 
 `gaps` includes missing fields, RPC failures, incomplete rank coverage, worker
 version mismatch and absent profiling measurements. Storage dtype in tensor

@@ -15,7 +15,9 @@ import json
 import math
 import os
 import re
+import uuid
 from collections.abc import Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -340,6 +342,31 @@ def extract_vllm_record(engine: Any, *, graph_dir: str | Path | None = None,
     return result
 
 
+def extend_run_record(run_record: Mapping[str, Any], engine_record: Mapping[str, Any],
+                      *, instance_id: str) -> dict:
+    """Add engine evidence to ENG-72's record without changing its verdict fields.
+
+    ``gitm.engine_descriptions`` is a proposed extension, keyed by engine instance
+    so a control and a canary need not share one configuration. The caller owns
+    the association with canary_instance/control_instances (or their namespaced
+    equivalents). An empty base produces an extension fragment, not a completed
+    loop record. Never manufacture gain, noise-floor, health, or policy values.
+    """
+    if not isinstance(instance_id, str) or not instance_id.strip():
+        raise ValueError("instance_id must be a nonempty string")
+    key = "gitm.engine_descriptions"
+    result = deepcopy(dict(run_record))
+    descriptions = result.get(key, {})
+    if not isinstance(descriptions, dict):
+        raise ValueError(f"{key} must be a mapping")
+    payload = _json_value(engine_record)
+    if instance_id in descriptions and descriptions[instance_id] != payload:
+        raise ValueError("engine instance already has different evidence; preserve the existing observation")
+    descriptions[instance_id] = deepcopy(payload)
+    result[key] = descriptions
+    return result
+
+
 def _check_launch_environment() -> None:
     active = [key for key in _HOOK_ENV if os.environ.get(key)]
     if active:
@@ -352,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--expected-vllm-version", required=True)
     parser.add_argument("--rpc-timeout", type=float, default=60.0)
+    parser.add_argument("--instance-id", help="engine instance label; default: a fresh probe-only UUID")
     parser.add_argument("engine_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     args.out = args.out.resolve()
@@ -365,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"expected vLLM {args.expected_vllm_version}; installed {installed}")
         if args.rpc_timeout <= 0 or not math.isfinite(args.rpc_timeout):
             raise ValueError("RPC timeout must be positive and finite")
+        if args.instance_id is not None and not args.instance_id.strip():
+            raise ValueError("instance_id must be a nonempty string")
         if args.out.exists():
             raise ValueError("output directory already exists; use a fresh path for this observation")
         from vllm import LLM, SamplingParams
@@ -395,13 +425,15 @@ def main(argv: list[str] | None = None) -> int:
             record["probe"] = {"kind": "in_process_launch", "gitm_tracing_hooks": False,
                                "image_identity": "unverified", "http_serving_parity": "unverified",
                                "note": "One generated token exercises compilation; not a benchmark."}
-            (args.out / "engine_record.json").write_text(json.dumps(record, indent=2, allow_nan=False))
+            instance_id = args.instance_id or f"probe-{uuid.uuid4().hex}"
+            extension = extend_run_record({}, record, instance_id=instance_id)
+            (args.out / "engine_record.json").write_text(json.dumps(extension, indent=2, allow_nan=False))
         finally:
             core = getattr(engine.llm_engine, "engine_core", None)
             shutdown = getattr(core, "shutdown", None)
             if callable(shutdown):
                 shutdown()
-        print(f"Engine record: {args.out / 'engine_record.json'}")
+        print(f"Run-record engine extension: {args.out / 'engine_record.json'}")
         print(f"Extraction: {record['status']}; {len(record['gaps'])} gaps; live review pending")
         return 0 if record["graph_artifacts"].get("graph_candidates", 0) else 2
     except (ValueError, ImportError, importlib.metadata.PackageNotFoundError) as exc:
