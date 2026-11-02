@@ -17,15 +17,21 @@ import os
 import re
 import uuid
 from collections.abc import Mapping
-from copy import deepcopy
 from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
+# Engine-neutral record helpers, aliased to the names this module already uses.
+from gitm.engines.record import class_name as _class_name
+from gitm.engines.record import collect_gaps as _gaps
+from gitm.engines.record import extend_run_record
+from gitm.engines.record import json_value as _json_value
+from gitm.engines.record import missing as _missing
+from gitm.engines.record import navigate as _at
+from gitm.engines.record import observe as _read
+
 _ROOTS = ("llm_engine.vllm_config", "engine.vllm_config", "vllm_config",
           "llm_engine", "engine", "")
-_SECRET_KEYS = {"hf_token", "token", "api_key", "authorization", "password", "access_token"}
 _HOOK_ENV = ("CUDA_INJECTION64_PATH", "NVTX_INJECTION64_PATH", "ROCP_TOOL_LIBRARIES",
              "GITM_TRACE_OUT", "GITM_TRACE_NVTX")
 _FIELDS = {
@@ -41,53 +47,6 @@ _FIELDS = {
                     "cudagraph_capture_sizes", "compile_sizes"),
     "attention": ("backend",),
 }
-
-
-def _class_name(value: Any) -> str:
-    cls = type(value)
-    return f"{cls.__module__}.{cls.__qualname__}"
-
-
-def _json_value(value: Any) -> Any:
-    """Strict metadata-only conversion. Never repr arbitrary engine objects."""
-    if isinstance(value, Enum):
-        return _json_value(value.value)
-    if value is None or isinstance(value, str | bool | int):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("non-finite value")
-        return value
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {str(k): "[redacted]" if str(k).lower() in _SECRET_KEYS else _json_value(v)
-                for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_value(v) for v in value]
-    if type(value).__module__ == "torch" and type(value).__name__ in ("dtype", "device"):
-        return str(value)
-    raise TypeError(f"unsupported metadata type: {_class_name(value)}")
-
-
-def _at(obj: Any, path: str) -> Any:
-    for part in path.split(".") if path else ():
-        obj = obj[part] if isinstance(obj, Mapping) else getattr(obj, part)
-    return obj
-
-
-def _missing(source: str, reason: str) -> dict:
-    return {"status": "unavailable", "value": None, "source": source, "reason": reason}
-
-
-def _read(obj: Any, path: str, *, source: str | None = None) -> dict:
-    source = source or path
-    try:
-        return {"status": "observed", "value": _json_value(_at(obj, path)), "source": source}
-    except (AttributeError, KeyError):
-        return _missing(source, "not exposed by this engine object")
-    except Exception as exc:
-        return _missing(source, f"read failed ({type(exc).__name__})")
 
 
 def _find_config(engine: Any, section: str, *, include_none: bool = False) -> tuple[Any, str]:
@@ -260,20 +219,6 @@ def inspect_graph_artifacts(directory: str | Path | None) -> dict:
             "shape_coverage": "unverified", "rank_coverage": "unverified"}
 
 
-def _gaps(value: Any, path: str = "") -> list[dict]:
-    out = []
-    if isinstance(value, dict):
-        if value.get("status") in ("unavailable", "partial"):
-            out.append({"field": path, "reason": value.get("reason", "partial evidence")})
-        for key, item in value.items():
-            if key != "value":
-                out.extend(_gaps(item, f"{path}.{key}".strip(".")))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            out.extend(_gaps(item, f"{path}[{index}]"))
-    return out
-
-
 def extract_vllm_record(engine: Any, *, graph_dir: str | Path | None = None,
                         rpc_timeout_s: float = 60.0) -> dict:
     """Describe a live LLM/LLMEngine; existing HTTP endpoints alone aren't assumed sufficient."""
@@ -339,31 +284,6 @@ def extract_vllm_record(engine: Any, *, graph_dir: str | Path | None = None,
     # Extraction never establishes deployment acceptance, graph completeness,
     # model correctness, or planner parity by itself.
     result["acceptance"] = "pending_live_review"
-    return result
-
-
-def extend_run_record(run_record: Mapping[str, Any], engine_record: Mapping[str, Any],
-                      *, instance_id: str) -> dict:
-    """Add engine evidence to ENG-72's record without changing its verdict fields.
-
-    ``gitm.engine_descriptions`` is a proposed extension, keyed by engine instance
-    so a control and a canary need not share one configuration. The caller owns
-    the association with canary_instance/control_instances (or their namespaced
-    equivalents). An empty base produces an extension fragment, not a completed
-    loop record. Never manufacture gain, noise-floor, health, or policy values.
-    """
-    if not isinstance(instance_id, str) or not instance_id.strip():
-        raise ValueError("instance_id must be a nonempty string")
-    key = "gitm.engine_descriptions"
-    result = deepcopy(dict(run_record))
-    descriptions = result.get(key, {})
-    if not isinstance(descriptions, dict):
-        raise ValueError(f"{key} must be a mapping")
-    payload = _json_value(engine_record)
-    if instance_id in descriptions and descriptions[instance_id] != payload:
-        raise ValueError("engine instance already has different evidence; preserve the existing observation")
-    descriptions[instance_id] = deepcopy(payload)
-    result[key] = descriptions
     return result
 
 

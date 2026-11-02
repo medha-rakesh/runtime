@@ -57,3 +57,56 @@ tracing environment variables. The dedicated tracing-rejection test still sets
 an injection variable and verifies the production guard refuses it. All 37 new
 tests pass even when the pytest process inherits an injection variable; no
 production guard has been removed or bypassed.
+
+## Review pass — November 2, 2026
+
+Changes addressing Sebastian's review, made on top of `089f5a6`:
+
+- **Reuse across engines:** the engine-neutral helpers (`{status, value, source}`
+  builders, JSON-safe serialization with secret redaction, the gap collector, and
+  `extend_run_record`) moved to a new `gitm/engines/record.py`. `vllm_record.py`
+  imports them and keeps only vLLM-specific config navigation. No behavior change;
+  the vLLM module re-uses the same names. This is a small shared module, not a
+  base class or a shared engine protocol (that is ENG-69/73's).
+- **Wiring/scope:** `ENG-85.md` gains a "Wiring and boundaries" section stating
+  exactly what the PR connects (only `extend_run_record` onto the ENG-72 record)
+  and what it deliberately does not (the loop and Pamela's collector).
+- **JSON organization:** `ENG-85.md` gains a "Record organization" rationale
+  (three tiers: driver-resolved config, per-rank observations, diagnostics) and a
+  complete, clearly-synthetic example nested inside an ENG-72 run record.
+- **Acceptance checklist:** added `ACCEPTANCE-CHECKLIST.md`, every R1 field mapped
+  to code, CPU test, and the live evidence still owed.
+
+Re-run on this branch with Python 3.11:
+
+```bash
+PYTHONPATH=. python -m pytest tests/test_vllm_engine_record.py \
+  tests/test_vllm_stats_v1.py tests/test_predict_graph_from_engine.py \
+  tests/test_gpu_detect.py -q -o addopts=''
+ruff --version   # 0.12.11
+ruff check .
+```
+
+Result: **71 CPU tests pass** (unchanged — the refactor moved code, it did not add
+or remove tests), `ruff check .` clean. No GPU was used.
+
+## Live run blocker (code delivery)
+
+The written ENG-85 acceptance needs one Kimi K2.6 run on the assigned node. That
+run is currently **blocked**, and the blocker is not the extractor:
+
+- The container installs gitm via `gitm-job --gitm-ref` (default `main`), which
+  reads `GitM-Labs/runtime` — not a fork. The ENG-85 code lives on the fork
+  branch `medha/eng-85-vllm-engine-record` and is **not merged to `main`**, so the
+  default image does not contain it.
+- Per Rishith's ENG-77 note, private-repo GitHub archive downloads inside
+  containers now return **404**, and `--gitm-ref` installation of unmerged code
+  needs a separately resolved private-repo delivery mechanism that is not yet in
+  place. Injecting personal GitHub credentials into a job is not an acceptable
+  workaround.
+
+**Smallest unblock:** a supported way to get this branch's commit into the
+container — e.g. the team merges the PR to `main` first (then `--gitm-ref main`
+carries it), or Rishith's baked-in-image / private delivery path lands and we
+point the job at this commit. Until then, the extractor is finished and green
+locally but cannot be validated live.
